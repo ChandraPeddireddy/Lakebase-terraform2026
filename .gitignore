@@ -1,0 +1,10 @@
+# Local secrets — never commit
+env.sh
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log

@@ -1,0 +1,20 @@
+# Copy this file to terraform.tfvars and override values for your team.
+#   cp terraform.tfvars.example terraform.tfvars
+# terraform.tfvars is gitignored so per-team values never get committed.
+#
+# Every value below is optional — omitting one uses the default in variables.tf
+# (which reproduces the original quickstart).
+
+# --- Project ----------------------------------------------------------------
+project_id             = "my-app"          # immutable; changing recreates the project
+project_display_name   = "My Application"
+pg_version             = 17                 # 14, 15, 16, or 17
+enable_pg_native_login = false
+purge_on_delete        = false              # true = hard delete on destroy (no 7-day retention)
+
+# --- Dev branch + endpoint --------------------------------------------------
+create_dev_branch    = true                 # false = manage the project only
+dev_branch_id        = "dev"
+dev_branch_no_expiry = true
+dev_endpoint_id      = "primary"
+dev_endpoint_type    = "ENDPOINT_TYPE_READ_WRITE"  # or ENDPOINT_TYPE_READ_ONLY
