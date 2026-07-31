@@ -10,7 +10,7 @@
 variable "project_id" {
   description = "Lakebase project id (immutable; changing it recreates the project)."
   type        = string
-  default     = "nba-humama-dev"
+  default     = "lakebase-project-id-dev"
 
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$", var.project_id))
@@ -21,7 +21,7 @@ variable "project_id" {
 variable "project_display_name" {
   description = "Human-friendly name shown in the Databricks UI."
   type        = string
-  default     = "nba-humama-dev-name"
+  default     = "lakebase-project-id-dev-name"
 }
 
 variable "pg_version" {
