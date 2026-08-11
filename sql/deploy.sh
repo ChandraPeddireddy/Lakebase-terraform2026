@@ -63,14 +63,18 @@ ENDPOINT_NAME="$(terraform -chdir="$TF_DIR" output -raw dev_endpoint_name 2>/dev
 [[ -n "$ENDPOINT_NAME" && "$ENDPOINT_NAME" != "null" ]] \
   || { err "no dev_endpoint_name output — run 'terraform apply' first"; exit 1; }
 
-PG_HOST="$(databricks api get "/api/2.0/postgres/${ENDPOINT_NAME}" \
+# Use the typed `databricks postgres` subcommands rather than the raw
+# `databricks api .../postgres/...` passthrough: the passthrough resolves auth
+# differently and can latch onto a stale cached U2M token (failing with
+# "invalid_grant: Refresh token is invalid") even when OAuth M2M env creds are
+# set. The typed commands resolve auth correctly and track the Beta API.
+PG_HOST="$(databricks postgres get-endpoint "${ENDPOINT_NAME}" -o json \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
 PG_USER="$(databricks current-user me \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
 
 log "Minting short-lived Postgres credential"
-PGPASSWORD="$(databricks api post /api/2.0/postgres/credentials \
-  --json "{\"endpoint\":\"${ENDPOINT_NAME}\"}" \
+PGPASSWORD="$(databricks postgres generate-database-credential "${ENDPOINT_NAME}" -o json \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
 export PGPASSWORD PGSSLMODE="require"
 

@@ -64,12 +64,13 @@ ENDPOINT_NAME="$(terraform -chdir="$TF_DIR" output -raw dev_endpoint_name 2>/dev
 [[ -n "$ENDPOINT_NAME" && "$ENDPOINT_NAME" != "null" ]] \
   || { err "no dev_endpoint_name output — run 'terraform apply' first"; exit 1; }
 
-PG_HOST="$(databricks api get "/api/2.0/postgres/${ENDPOINT_NAME}" \
+# Typed `databricks postgres` subcommands, not the raw `api` passthrough — see
+# the equivalent note in deploy.sh (avoids stale-U2M-token auth failures).
+PG_HOST="$(databricks postgres get-endpoint "${ENDPOINT_NAME}" -o json \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
 PG_USER="$(databricks current-user me \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
-PGPASSWORD="$(databricks api post /api/2.0/postgres/credentials \
-  --json "{\"endpoint\":\"${ENDPOINT_NAME}\"}" \
+PGPASSWORD="$(databricks postgres generate-database-credential "${ENDPOINT_NAME}" -o json \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
 export PGPASSWORD PGSSLMODE="require"
 

@@ -7,4 +7,6 @@ env.sh
 *.tfstate
 *.tfstate.*
 *.tfvars
+tfplan
+*.tfplan
 crash.log
