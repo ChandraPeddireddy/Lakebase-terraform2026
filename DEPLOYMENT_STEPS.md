@@ -1,8 +1,6 @@
-# Deployment steps — Lakebase Terraform (v3) test runbook
+# Deployment steps — Lakebase Terraform (v3)
 
-Step-by-step commands to deploy and verify the `terraform-v3-oauth-secrets`
-branch from a clean slate. Run from a terminal, in order. Every phase is
-idempotent and safe to re-run.
+Commands to deploy and verify the `terraform-v3-oauth-secrets` branch.
 
 Assumes: `env.sh` holds the automation SP's OAuth M2M creds
 (`DATABRICKS_HOST` + `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`),
@@ -11,6 +9,31 @@ Assumes: `env.sh` holds the automation SP's OAuth M2M creds
 All commands are **repo-relative** — run them from the root of your clone. The
 scripts resolve paths relative to themselves (`$(dirname)` / `terraform -chdir`),
 so the repo can live anywhere; nothing depends on a fixed absolute path.
+
+## Two workflows — pick the right one
+
+| | **A. First-time deploy** | **B. Incremental change** |
+|---|---|---|
+| When | Fresh clone / brand-new environment | Every change after the first deploy |
+| Wipe state (`rm -rf`) | Yes — nothing exists yet | **NEVER** — state is your source of truth |
+| `terraform init` | Yes | Only if providers/backend changed |
+| Steps | Phase 0 → 1 → 2 → 3 → verify | **Just the [Incremental loop](#b-incremental-change-the-everyday-workflow)** |
+
+> ⚠️ **NEVER run `rm -rf ... terraform.tfstate` on a live deployment.** The state
+> file is Terraform's record of what it created. Deleting it makes Terraform
+> forget it owns the resources — the next `apply` tries to recreate them and
+> fails with "already exists" (or orphans them). The `rm -rf` in Phase 1 is
+> ONLY for a from-scratch clone or a deliberate clean-room test.
+
+Terraform is declarative: after the first deploy, you **edit config and re-plan**.
+`plan` diffs your config against the state file and shows only the delta — add one
+identity and it's "1 to add, 0 to change, 0 to destroy", nothing else disturbed.
+That is the everyday path (workflow B); the full first-time sequence (workflow A)
+is below it.
+
+---
+
+# A. First-time deploy
 
 ---
 
@@ -122,6 +145,52 @@ psql -h "$YOUR_HOST" -p 5432 -U "$YOU" -d databricks_postgres -c "INSERT INTO ap
 
 Then open the **SQL Editor** in the workspace UI, point it at the **dev** branch
 endpoint, and confirm you can browse `app.customers` / `app.orders`.
+
+---
+
+# B. Incremental change (the everyday workflow)
+
+After the first deploy exists, you **never wipe state and never re-init** (unless
+providers/backend changed). You edit config, preview the delta, apply it, and
+re-run only the SQL layer affected. Terraform's state file makes `plan` show just
+what changed.
+
+```bash
+# 1. Setup this shell (same as Phase 0, but NO rm -rf, NO fresh clone)
+cd <your-repo-clone>
+source env.sh
+unset DATABRICKS_CONFIG_PROFILE DATABRICKS_TOKEN
+export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
+
+# 2. Make your change — edit a .tf file or terraform.tfvars. Examples:
+#    - add/remove an identity in db_identity_roles
+#    - change an identity's access (read <-> readwrite <-> none)
+#    - bump pg_version, change endpoint type, etc.
+
+# 3. Preview EXACTLY the delta (read this every time before applying)
+terraform plan -out=tfplan
+#    e.g. "Plan: 1 to add, 0 to change, 0 to destroy" — only your change
+
+# 4. Apply just that delta
+terraform apply tfplan
+
+# 5. Re-run ONLY the SQL layer affected by the change (all idempotent):
+cd sql
+./grant_access.sh          # if you changed db_identity_roles (identities/access)
+# ./deploy.sh              # if you ADDED a migration (NNN_*.sql) — applies only new ones
+# ./rotate_password.sh --role app_service --secret-scope lakebase --secret-key app_service_pw
+#                         # if you need to rotate the app password
+```
+
+**Notes**
+- `terraform plan` with no config change prints *"No changes. Your infrastructure
+  matches the configuration."* — proof the state is in sync.
+- Adding a migration: create the next `NNN_*.sql`, never edit an applied one
+  (the checksum guard rejects edits). `deploy.sh` applies only pending files.
+- Removing an identity: delete its entry from `db_identity_roles`, `apply`
+  (Terraform drops the role), then `grant_access.sh` reconciles remaining grants.
+- If you edit `versions.tf` (provider/version) or add a backend, run
+  `terraform init` once before `plan`.
 
 ---
 
