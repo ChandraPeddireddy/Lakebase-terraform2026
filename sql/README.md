@@ -1,0 +1,84 @@
+# SQL migrations
+
+Versioned, forward-only SQL migrations for the Lakebase database. This is
+deployed and managed **separately** from the Terraform infra — Terraform creates
+the project/branch/endpoint; these migrations manage the schema and data *inside*
+the database.
+
+## Design
+
+Standard sequential-migration pattern (Flyway/Rails-style), kept minimal:
+
+- **Sequentially numbered files** in `migrations/` (`NNN_description.sql`) applied
+  in ascending order.
+- **Forward-only and immutable** — never edit a migration once it has been
+  applied anywhere. Add a new, higher-numbered file instead.
+- **State lives in the database** in `app.schema_migrations`, so the runner is
+  stateless. Each applied migration records its filename, a **SHA-256 checksum**,
+  and a timestamp.
+- **Idempotent** — re-running applies only what's pending; already-applied
+  migrations are skipped. A checksum guard aborts if an applied file was changed.
+- **Transactional** — each migration and its ledger insert run in a single
+  transaction, so a failure leaves nothing half-applied.
+
+```
+sql/
+├── migrations/
+│   ├── 001_create_schema.sql   # CREATE SCHEMA app
+│   ├── 002_create_tables.sql   # tables + indexes
+│   └── 003_seed_data.sql       # idempotent seed/reference data
+├── deploy.sh                   # the runner
+└── README.md
+```
+
+The intended order is **schema → tables → data**, which is just the numeric
+order. Add more the same way (`004_…`, `005_…`).
+
+## Prerequisites
+
+| Tool | Notes |
+|---|---|
+| `psql` | `brew install libpq` (client only) |
+| `terraform` | endpoint connection details come from `terraform output` |
+| `databricks` CLI | mints the short-lived Postgres token |
+
+The infra must already be applied (`terraform apply` in the parent dir) so
+`dev_endpoint_name` output exists.
+
+## Usage
+
+```bash
+source ../env.sh        # DATABRICKS_HOST + DATABRICKS_TOKEN (see ../README.md Auth)
+
+./deploy.sh             # apply all pending migrations
+./deploy.sh --status    # list applied vs pending; change nothing
+./deploy.sh --dry-run   # list what would be applied; change nothing
+```
+
+No connection strings or passwords are ever hardcoded: the runner reads the
+endpoint from Terraform, looks up your Postgres username (your Databricks email),
+and mints a fresh, short-lived OAuth token as the password on each run.
+
+### Optional overrides
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `PG_DATABASE` | `databricks_postgres` | Target database name |
+| `TF_DIR` | parent of `sql/` | Where to read `terraform output` |
+
+## Adding a migration
+
+1. Create the next-numbered file, e.g. `migrations/004_add_widgets.sql`.
+2. Write forward-only DDL/DML. Prefer idempotent statements
+   (`CREATE TABLE IF NOT EXISTS`, `INSERT … ON CONFLICT DO NOTHING`) as a
+   robustness backstop.
+3. `./deploy.sh --dry-run` to preview, then `./deploy.sh` to apply.
+4. Commit the new file. **Never edit an already-applied migration** — the
+   checksum guard will (correctly) refuse to run.
+
+## Rollbacks
+
+This runner is intentionally forward-only (no `down` scripts). To reverse a
+change, write a new migration that undoes it. For a full reset in a **throwaway
+dev** database you can `DROP SCHEMA app CASCADE;` and re-run `./deploy.sh` — never
+do this against data you care about.

@@ -10,7 +10,17 @@ project_id             = "my-app"          # immutable; changing recreates the p
 project_display_name   = "My Application"
 pg_version             = 17                 # 14, 15, 16, or 17
 enable_pg_native_login = false
-purge_on_delete        = false              # true = hard delete on destroy (no 7-day retention)
+
+# purge_on_delete: how `terraform destroy` treats the project.
+#   false (default) — soft delete with a 7-day retention window. Safer/recoverable;
+#                     use for production and anything you might want back. The
+#                     project_id slug stays reserved until the window expires.
+#   true            — hard delete on destroy, frees the slug immediately.
+# Recommended: keep false, and only set true in dev/CI where you tear down and
+# re-create the same project_id often (a soft-deleted slug blocks re-apply until
+# it expires). See "Deleting a project: soft delete vs. purge" in the README.
+purge_on_delete        = false
+# purge_on_delete      = true               # dev/CI: hard-delete on destroy, free the slug now
 
 # --- Dev branch + endpoint --------------------------------------------------
 create_dev_branch    = true                 # false = manage the project only

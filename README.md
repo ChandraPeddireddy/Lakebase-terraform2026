@@ -17,6 +17,11 @@ This config is fully parameterized (see [Configuration](#configuration)) so any
 team can point it at their own workspace and project by copying two template
 files — no `.tf` edits required.
 
+> **Schema & data (DDL/DML)** are managed separately from this infra, as
+> versioned SQL migrations under [`sql/`](sql/README.md). Terraform creates the
+> project/branch/endpoint; the migration runner manages what lives *inside* the
+> database. Deploy them after `terraform apply` with `cd sql && ./deploy.sh`.
+
 ## Auth
 
 Set `DATABRICKS_HOST` plus **one** credential in `env.sh`. Two methods work:
@@ -122,7 +127,69 @@ Order of operations: **Project → Branch → Endpoint**
 | `outputs.tf` | Output values (steps 3–7) |
 | `terraform.tfvars.example` | Config template (copy to `terraform.tfvars`) |
 | `env.sh.example` | Auth env vars template (copy to `env.sh`) |
+| `sql/` | Versioned SQL migrations + runner (schema/tables/data) — see [`sql/README.md`](sql/README.md) |
 | `.gitignore` | Ignores `env.sh`, `*.tfvars`, state, `.terraform/` |
+
+## Deleting a project: soft delete vs. purge
+
+`terraform destroy` (or removing the project resource and running `apply`) does
+**not** immediately free the project. Deletion behavior is controlled by
+`purge_on_delete`:
+
+| Mode | `purge_on_delete` | What happens | Slug freed? |
+|---|---|---|---|
+| **Soft delete** (default) | `false` | Project is soft-deleted with a **7-day retention window** (`purge_time` is 7 days out). | Not until purge_time — the `project_id` slug stays **reserved**. |
+| **Hard delete / purge** | `true` | Project is destroyed immediately, no retention. | Immediately. |
+
+**When to use which:**
+
+- **Soft delete** (`false`) — the safe default. Use for anything you might want
+  to recover, and always for **production**. A destroy is reversible-ish: the
+  data is retained for 7 days.
+- **Purge** (`true`) — use for **throwaway/dev/CI** projects you re-create often.
+  Because soft delete reserves the slug, a soft-deleted project blocks you from
+  re-applying with the **same `project_id`** until its 7-day window expires.
+
+Set it in `terraform.tfvars`:
+
+```hcl
+purge_on_delete = true   # dev/CI: hard-delete on destroy, free the slug now
+```
+
+### Fixing `project slug already exists in the workspace`
+
+This error at `apply` time means a project with your `project_id` is still
+**soft-deleted** and holding the slug (typical after a `destroy` with the default
+`purge_on_delete = false`, then an immediate re-`apply`). There is no undelete
+API. Two ways forward:
+
+1. **Purge the leftover soft-deleted project** to free the slug, then re-apply.
+   Requires the `databricks` CLI with PAT auth (see [Auth](#auth)):
+
+   ```bash
+   source env.sh
+   # Force PAT auth so the CLI doesn't fall back to the OAuth cache:
+   export DATABRICKS_AUTH_TYPE=pat DATABRICKS_CONFIG_PROFILE=
+
+   # Confirm it's soft-deleted (look for delete_time / purge_time):
+   databricks api get "/api/2.0/postgres/projects/<project_id>"
+
+   # Purge it (irreversible — only for a project you intend to discard):
+   databricks api delete "/api/2.0/postgres/projects/<project_id>?purge=true"
+
+   terraform apply
+   ```
+
+2. **Pick a new `project_id`** in `terraform.tfvars` and `apply`, leaving the old
+   one to expire on its own after 7 days.
+
+> ⚠️ Purge is irreversible. Only run it against a project you're certain is a
+> discarded/soft-deleted leftover — verify `delete_time` is set first.
+
+**Recommendation — what should be standard:** keep `purge_on_delete = false`
+(soft delete) as the standing default so accidental destroys are recoverable, and
+flip it to `true` **only** in dev/CI `terraform.tfvars` where you tear down and
+re-create the same `project_id` frequently.
 
 ## Cleanup / gotchas
 
@@ -130,9 +197,6 @@ Order of operations: **Project → Branch → Endpoint**
   `databricks_postgres_endpoint.dev_primary`, and the
   `data "databricks_postgres_endpoints" "dev"` block (plus their outputs), then
   `terraform apply`. Terraform destroys the endpoint before the branch.
-- **Deleting a project soft-deletes it** (7-day retention). For immediate hard
-  delete: add `purge_on_delete = true` to the project, `apply`, then remove the
-  resource and `apply` again.
 - **Drift**: changes made via UI/CLI/API are **not** detected by Terraform. Manage
   these resources through Terraform only.
 - **Sibling serialization**: Lakebase processes one role/database/endpoint op at a
