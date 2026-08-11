@@ -87,6 +87,52 @@ variable "dev_endpoint_type" {
   }
 }
 
+# --- Identity-linked Postgres roles -----------------------------------------
+# Provision a Postgres role per Databricks identity (user or service principal),
+# keyed by a stable role_id slug so add/remove doesn't reshuffle state
+# (for_each, not count). Two layers, by design:
+#   1. Terraform creates the role + its OAuth login binding (databricks_postgres_role).
+#      This MUST go through the Databricks API — a plain SQL `CREATE ROLE` cannot
+#      establish the Databricks-identity/OAuth linkage.
+#   2. The app_ro / app_rw GROUP membership (which confers table access) is a
+#      SQL GRANT applied by sql/grant_access.sh — the Databricks role API's
+#      `membership_roles` only accepts predefined roles, not our app_* groups.
+#
+# `access` drives layer 2:
+#   "read"      -> GRANT app_ro   (SELECT on app.*)
+#   "readwrite" -> GRANT app_rw   (SELECT/INSERT/UPDATE/DELETE on app.*)
+#   "none"      -> role created, login only, no app grants
+variable "db_identity_roles" {
+  description = "Map of Databricks identities to provision as Postgres roles. Key = role_id slug (^[a-z][a-z0-9-]*$). principal = user email or SP application id."
+  type = map(object({
+    identity_type = string           # "USER" or "SERVICE_PRINCIPAL"
+    principal     = string           # user email, or SP application id (UUID)
+    access        = optional(string) # "read" | "readwrite" | "none" (default "read")
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue([
+      for k, v in var.db_identity_roles : can(regex("^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$", k))
+    ])
+    error_message = "each db_identity_roles key (role_id slug) must match ^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ (start with a letter, lowercase alphanumeric/hyphens)."
+  }
+
+  validation {
+    condition = alltrue([
+      for k, v in var.db_identity_roles : contains(["USER", "SERVICE_PRINCIPAL"], v.identity_type)
+    ])
+    error_message = "identity_type must be USER or SERVICE_PRINCIPAL."
+  }
+
+  validation {
+    condition = alltrue([
+      for k, v in var.db_identity_roles : v.access == null || contains(["read", "readwrite", "none"], v.access)
+    ])
+    error_message = "access must be one of: read, readwrite, none."
+  }
+}
+
 # --- Secret scope (for role passwords) --------------------------------------
 variable "create_secret_scope" {
   description = "Whether to create a Databricks secret scope for Lakebase role passwords."

@@ -107,6 +107,7 @@ original quickstart. Override them in `terraform.tfvars` — see
 | `secret_key` | `app_service_pw` | Key where the role password is stored |
 | `secret_reader_principal` | `""` | Optional principal granted `READ` on the scope |
 | `manage_secret_value` | `false` | Opt-in: manage the password value in TF (plaintext in **state**) |
+| `db_identity_roles` | `{}` | Map of Databricks identities (users/SPs) to provision as Postgres roles + access level |
 
 Inputs are validated (e.g. `pg_version` must be 14–17, `project_id` must be a
 valid slug), so bad values fail at `plan` instead of at the API.
@@ -124,6 +125,39 @@ Order of operations: **Project → Branch → Endpoint**
 - `databricks_secret_scope.lakebase` (+ optional `databricks_secret_acl`) — a
   secret scope to hold Lakebase role passwords. Skipped when
   `create_secret_scope = false`.
+- `databricks_postgres_role.identity` (one per `db_identity_roles` entry) — a
+  Postgres role + OAuth login binding for each Databricks user/SP that needs to
+  connect. Empty by default.
+
+### Granting access to Databricks identities
+
+Each person or service principal that connects needs a Postgres role bound to
+their Databricks identity — otherwise the SQL Editor reports *"permission denied
+— ask the database owner to create a PostgreSQL role for your Databricks
+identity"*. This is managed in two layers, declaratively:
+
+1. **Terraform** (`roles.tf`, driven by the `db_identity_roles` map) creates the
+   role + OAuth login. This must go through the Databricks API — plain SQL
+   `CREATE ROLE` can't establish the identity/OAuth linkage.
+2. **`sql/grant_access.sh`** applies `app_ro`/`app_rw` group membership from each
+   entry's `access` level (`read` / `readwrite` / `none`), because the role
+   API's `membership_roles` doesn't accept the custom `app_*` groups.
+
+```hcl
+# terraform.tfvars
+db_identity_roles = {
+  "user-alice" = { identity_type = "USER",              principal = "alice@corp.com", access = "read" }
+  "sp-my-app"  = { identity_type = "SERVICE_PRINCIPAL", principal = "<sp-app-id>",    access = "readwrite" }
+}
+```
+
+```bash
+terraform apply                       # layer 1: roles + OAuth login
+cd sql && source ../env.sh
+./grant_access.sh                     # layer 2: app_ro/app_rw grants
+```
+
+See [`sql/README.md`](sql/README.md) for details.
 
 ### Secret management
 
@@ -151,7 +185,8 @@ is then stored in Terraform state. Prefer the script for anything real.
 | `variables.tf` | Input variables + validation (all tunables) |
 | `main.tf` | Project, branch, endpoint, and data sources |
 | `secrets.tf` | Secret scope + ACLs for role passwords |
-| `outputs.tf` | Output values (steps 3–7, secret scope) |
+| `roles.tf` | Identity-linked Postgres roles (users/SPs) from `db_identity_roles` |
+| `outputs.tf` | Output values (steps 3–7, secret scope, identity grants) |
 | `terraform.tfvars.example` | Config template (copy to `terraform.tfvars`) |
 | `env.sh.example` | Auth env vars template (copy to `env.sh`) |
 | `sql/` | Versioned SQL migrations + runner (schema/tables/data) — see [`sql/README.md`](sql/README.md) |

@@ -43,3 +43,14 @@ secret_reader_principal = ""            # e.g. "me@example.com" or an SP app id;
 # plaintext password in Terraform STATE — avoid for real environments.
 # manage_secret_value = false
 # secret_value        = ""              # pass via TF_VAR_secret_value, never commit
+
+# --- Identity-linked Postgres roles -----------------------------------------
+# One entry per Databricks identity (user or SP) that needs to connect. Terraform
+# creates the role + OAuth login (roles.tf); sql/grant_access.sh then applies the
+# app_ro/app_rw group grant from `access`. Key = role_id slug (lowercase, letter-
+# first). access: "read" (app_ro) | "readwrite" (app_rw) | "none" (login only).
+# Default {} = create no identity roles.
+# db_identity_roles = {
+#   "user-alice" = { identity_type = "USER",              principal = "alice@corp.com", access = "read" }
+#   "sp-my-app"  = { identity_type = "SERVICE_PRINCIPAL", principal = "<sp-app-id>",    access = "readwrite" }
+# }

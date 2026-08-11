@@ -51,3 +51,17 @@ output "secret_key" {
   description = "Key within the scope where the role password is stored. Populate it with sql/rotate_password.sh --secret-scope <scope> --secret-key <key>."
   value       = var.create_secret_scope ? var.secret_key : null
 }
+
+# Identity-linked roles created by Terraform (layer 1). sql/grant_access.sh reads
+# this to apply the app_ro/app_rw GROUP grants (layer 2) that confer table access.
+# Emits one entry per role: the Postgres role name + desired access level.
+output "db_identity_grants" {
+  description = "Map of provisioned postgres_role -> access level (read|readwrite|none) for sql/grant_access.sh to enforce group membership."
+  # Iterate the resource map (not var.db_identity_roles) so this stays correct
+  # when create_dev_branch = false collapses the roles to an empty set — indexing
+  # the var into a non-existent resource instance would error at plan time.
+  value = {
+    for k, r in databricks_postgres_role.identity :
+    var.db_identity_roles[k].principal => coalesce(var.db_identity_roles[k].access, "read")
+  }
+}

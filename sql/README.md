@@ -123,6 +123,45 @@ granted to `app_ro`/`app_rw` automatically.
 > parent [`README.md`](../README.md) / `terraform.tfvars`) and `terraform apply`.
 > Human users connect with a short-lived OAuth token regardless.
 
+## Granting access to Databricks identities (users & SPs)
+
+The `app_ro`/`app_rw`/`app_service` roles above are the **privilege model**.
+Actual **people and service principals** (Databricks identities) get access in
+two layers:
+
+1. **Terraform** ([`../roles.tf`](../roles.tf)) creates a Postgres role for each
+   identity, bound to OAuth login — driven by the `db_identity_roles` map in
+   `terraform.tfvars`. This step **must** go through the Databricks API: a plain
+   SQL `CREATE ROLE` cannot establish the Databricks-identity/OAuth linkage,
+   which is why an unprovisioned user hitting the SQL Editor sees *"permission
+   denied — ask the database owner to create a PostgreSQL role for your
+   Databricks identity"*.
+2. **`grant_access.sh`** (this dir) reads the `db_identity_grants` terraform
+   output and applies `app_ro`/`app_rw` group membership per each identity's
+   `access` level. The role API's `membership_roles` field only accepts
+   Databricks *predefined* roles, not our `app_*` groups — so this grant is SQL.
+
+```bash
+# 1. Declare identities in terraform.tfvars:
+#    db_identity_roles = {
+#      "user-alice"  = { identity_type = "USER",              principal = "alice@corp.com",  access = "read" }
+#      "sp-my-app"   = { identity_type = "SERVICE_PRINCIPAL", principal = "<sp-app-id>",     access = "readwrite" }
+#    }
+terraform apply                 # creates the roles + OAuth login (layer 1)
+
+# 2. Apply the group grants (layer 2):
+source ../env.sh
+./grant_access.sh --dry-run     # preview the GRANT/REVOKE plan
+./grant_access.sh               # apply
+
+# access: "read" -> app_ro | "readwrite" -> app_rw | "none" -> login only, no app grants
+```
+
+`grant_access.sh` is idempotent and safe to re-run after every `terraform apply`
+that changes `db_identity_roles` — removing an identity's app access is a matter
+of setting `access = "none"` (or dropping the entry and re-applying), then
+re-running the script.
+
 ## Rollbacks
 
 This runner is intentionally forward-only (no `down` scripts). To reverse a
