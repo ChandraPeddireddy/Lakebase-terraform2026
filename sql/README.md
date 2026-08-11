@@ -24,10 +24,13 @@ Standard sequential-migration pattern (Flyway/Rails-style), kept minimal:
 ```
 sql/
 ├── migrations/
-│   ├── 001_create_schema.sql   # CREATE SCHEMA app
-│   ├── 002_create_tables.sql   # tables + indexes
-│   └── 003_seed_data.sql       # idempotent seed/reference data
-├── deploy.sh                   # the runner
+│   ├── 001_create_schema.sql       # CREATE SCHEMA app
+│   ├── 002_create_tables.sql       # tables + indexes
+│   ├── 003_seed_data.sql           # idempotent seed/reference data
+│   ├── 004_create_roles.sql        # app_ro / app_rw group roles + grants
+│   └── 005_create_login_user.sql   # app_service login role (no password)
+├── deploy.sh                       # the migration runner
+├── rotate_password.sh              # admin: set/rotate a role's password
 └── README.md
 ```
 
@@ -75,6 +78,48 @@ and mints a fresh, short-lived OAuth token as the password on each run.
 3. `./deploy.sh --dry-run` to preview, then `./deploy.sh` to apply.
 4. Commit the new file. **Never edit an already-applied migration** — the
    checksum guard will (correctly) refuse to run.
+
+## Password & role management (admin)
+
+Roles and grants are managed as ordinary migrations (`004`, `005`) because they
+are forward-only DDL. **Passwords are not** — a password is a secret and must
+never live in a git-tracked file. Set or rotate one with `rotate_password.sh`,
+which generates a strong password, applies it via `ALTER ROLE … WITH PASSWORD`
+over TLS, and optionally stores it in a Databricks secret scope. It never writes
+the password to disk or prints it unless you ask.
+
+```bash
+source ../env.sh
+
+# Generate a strong password and set it (not printed, not stored):
+./rotate_password.sh --role app_service
+
+# Generate + store in a Databricks secret scope (recommended):
+./rotate_password.sh --role app_service --secret-scope lakebase --secret-key app_service_pw
+
+# Generate + print once (capture it yourself):
+./rotate_password.sh --role app_service --show
+
+# Provide your own password (read from stdin, never from argv/history):
+echo 'my-password' | ./rotate_password.sh --role app_service --password-stdin
+```
+
+The role model (from the migrations):
+
+| Role | Login | Privileges |
+|---|---|---|
+| `app_ro` | no | `SELECT` on `app.*` (group role) |
+| `app_rw` | no | `app_ro` + `INSERT/UPDATE/DELETE` (group role) |
+| `app_service` | yes | member of `app_rw`; the app's login account |
+
+`ALTER DEFAULT PRIVILEGES` is set so tables added by **future** migrations are
+granted to `app_ro`/`app_rw` automatically.
+
+> **Native login must be enabled** for password auth to actually connect. This
+> project ships with `enable_pg_native_login = false`, so setting a password
+> succeeds but the role can't log in with it until you flip that flag (see the
+> parent [`README.md`](../README.md) / `terraform.tfvars`) and `terraform apply`.
+> Human users connect with a short-lived OAuth token regardless.
 
 ## Rollbacks
 
