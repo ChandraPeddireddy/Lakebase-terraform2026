@@ -8,23 +8,35 @@ Assumes: `env.sh` holds the automation SP's OAuth M2M creds
 (`DATABRICKS_HOST` + `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`),
 `terraform.tfvars` is configured, terraform + databricks CLI + libpq installed.
 
+All commands are **repo-relative** — run them from the root of your clone. The
+scripts resolve paths relative to themselves (`$(dirname)` / `terraform -chdir`),
+so the repo can live anywhere; nothing depends on a fixed absolute path.
+
 ---
 
 ## Phase 0 — Setup (once per shell)
 
 ```bash
-cd /tmp/Lakebase-terraform2026
+# Clone the repo wherever you keep your IaC (NOT /tmp — it's wiped on reboot),
+# then cd into it. Skip the clone if you already have a checkout.
+git clone https://github.com/ChandraPeddireddy/Lakebase-terraform2026.git
+cd Lakebase-terraform2026
+git checkout terraform-v3-oauth-secrets
+
+# First time only: create your local config from the templates and fill them in
+#   cp env.sh.example env.sh                 # set DATABRICKS_HOST + creds
+#   cp terraform.tfvars.example terraform.tfvars   # set project_id, identities, etc.
 
 # Auth: load automation SP M2M creds; ensure no profile/PAT shadows them
 source env.sh
 unset DATABRICKS_CONFIG_PROFILE DATABRICKS_TOKEN
 
-# Put psql on PATH (libpq is keg-only on macOS/Homebrew)
+# Put psql on PATH (libpq is keg-only on macOS/Homebrew; adjust for your OS)
 export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
 
 # Sanity checks
 git rev-parse --abbrev-ref HEAD                            # -> terraform-v3-oauth-secrets
-git log --oneline -1                                       # -> 4adc3e5 ...
+git log --oneline -1                                       # -> latest commit
 databricks auth describe | grep -i "Authenticated with"    # -> oauth-m2m
 ```
 
