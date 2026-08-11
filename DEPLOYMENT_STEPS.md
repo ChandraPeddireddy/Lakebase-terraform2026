@@ -114,8 +114,10 @@ cd sql
 ## Phase 4 — Verify as the automation SP (owner)
 
 ```bash
-# still in sql/ — resolve connection for ad-hoc psql
-ENDPOINT_NAME="projects/lakebase-demo-dev/branches/dev/endpoints/primary"
+# still in sql/ — resolve connection for ad-hoc psql. The endpoint name comes
+# from terraform output (project-agnostic — works for any project_id), same as
+# the scripts do. Run from the repo root, or pass -chdir to terraform.
+ENDPOINT_NAME="$(terraform -chdir=.. output -raw dev_endpoint_name)"
 PG_HOST="$(databricks postgres get-endpoint "$ENDPOINT_NAME" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
 PG_USER="$(databricks current-user me | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
 export PGPASSWORD="$(databricks postgres generate-database-credential "$ENDPOINT_NAME" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
@@ -127,19 +129,29 @@ psql -h "$PG_HOST" -p 5432 -U "$PG_USER" -d databricks_postgres -c "SELECT count
 
 ---
 
-## Phase 5 — Verify as YOU (the real SQL-Editor test)
+## Phase 5 — Verify as a HUMAN user (the real SQL-Editor test)
+
+Phases 0-4 run as the automation SP (deploy identity). This phase connects as a
+**human user** to prove the human read-only grant works — the SQL-Editor scenario.
+That needs the user's OWN Databricks login (a U2M CLI profile), NOT the SP creds.
+
+The user must be one you provisioned in `db_identity_roles` (e.g. an entry with
+`access = "read"`), and they need a CLI profile from `databricks auth login`.
 
 ```bash
-# Connect using YOUR identity via the lakebase-sandbox profile (NOT the SP)
-EP="projects/lakebase-demo-dev/branches/dev/endpoints/primary"
-YOUR_HOST="$(databricks postgres get-endpoint "$EP" --profile lakebase-sandbox -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
-YOU="$(databricks current-user me --profile lakebase-sandbox -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
-export PGPASSWORD="$(databricks postgres generate-database-credential "$EP" --profile lakebase-sandbox -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
+# Set to YOUR OWN Databricks CLI profile name (from ~/.databrickscfg).
+# Create one first if needed:  databricks auth login --host "$DATABRICKS_HOST"
+USER_PROFILE="<your-cli-profile>"      # e.g. the name you gave at `databricks auth login`
+
+EP="$(terraform -chdir=.. output -raw dev_endpoint_name)"   # project-agnostic
+YOUR_HOST="$(databricks postgres get-endpoint "$EP" --profile "$USER_PROFILE" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
+YOU="$(databricks current-user me --profile "$USER_PROFILE" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
+export PGPASSWORD="$(databricks postgres generate-database-credential "$EP" --profile "$USER_PROFILE" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
 export PGSSLMODE=require
 
-# Read should work:
+# Read should work (user has app_ro):
 psql -h "$YOUR_HOST" -p 5432 -U "$YOU" -d databricks_postgres -c "SELECT count(*) FROM app.customers;"   # -> 3
-# Write should be DENIED (you are read-only):
+# Write should be DENIED (read-only):
 psql -h "$YOUR_HOST" -p 5432 -U "$YOU" -d databricks_postgres -c "INSERT INTO app.customers(email,full_name) VALUES('x@x.com','x');"   # -> permission denied
 ```
 
