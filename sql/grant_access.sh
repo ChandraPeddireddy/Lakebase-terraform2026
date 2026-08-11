@@ -44,11 +44,16 @@ command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
 command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
 : "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
 
-# Auth resolution (same policy as deploy.sh): force PAT auth only when a PAT is
-# present, otherwise leave DATABRICKS_CONFIG_PROFILE-based OAuth resolution intact.
+# Auth resolution (same policy as deploy.sh) — precedence: PAT > OAuth M2M >
+# config profile. Clear a lingering DATABRICKS_CONFIG_PROFILE when an explicit
+# credential is set so it can't shadow the env-var creds; leave profile-based
+# resolution intact when no explicit credential is present.
 if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
   export DATABRICKS_CONFIG_PROFILE=""
   export DATABRICKS_AUTH_TYPE="pat"
+elif [[ -n "${DATABRICKS_CLIENT_ID:-}" && -n "${DATABRICKS_CLIENT_SECRET:-}" ]]; then
+  export DATABRICKS_CONFIG_PROFILE=""
+  export DATABRICKS_AUTH_TYPE="oauth-m2m"
 fi
 
 # --- Resolve connection (typed commands, same as deploy.sh) ------------------
@@ -65,7 +70,8 @@ PGPASSWORD="$(databricks postgres generate-database-credential "${ENDPOINT_NAME}
 export PGPASSWORD PGSSLMODE="require"
 
 # --- Read the grant plan from terraform output -------------------------------
-GRANTS_JSON="$(terraform -chdir="$TF_DIR" output -json db_identity_grants 2>/dev/null || echo '{}')"
+# db_identity_grants is a JSON list of {role, access} (see ../outputs.tf).
+GRANTS_JSON="$(terraform -chdir="$TF_DIR" output -json db_identity_grants 2>/dev/null || echo '[]')"
 COUNT="$(python3 -c 'import sys,json;print(len(json.load(sys.stdin)))' <<<"$GRANTS_JSON")"
 (( COUNT )) || { log "No identity grants in terraform output — nothing to do."; exit 0; }
 
@@ -86,23 +92,33 @@ apply_one() {
   esac
 }
 
-# Iterate the map: {postgres_role: access}
+# Build the full statement batch first, then apply it in a SINGLE transaction so
+# grants are all-or-nothing: if any one fails (e.g. a role that terraform apply
+# hasn't created yet) the whole batch rolls back, leaving the DB unchanged rather
+# than a partial, iteration-order-dependent set of grants. This also uses one
+# connection instead of one psql round trip per identity.
+SQL=""
+applied=0
 while IFS=$'\t' read -r role access; do
-  stmt="$(apply_one "$role" "$access")"
+  # apply_one returns non-zero on an unknown access value; under `set -e` that
+  # aborts here before anything is applied.
+  SQL+="$(apply_one "$role" "$access")"$'\n'
   if (( DRY_RUN )); then
-    echo "  [plan] $role ($access): $stmt"
-  else
-    log "Granting '$access' to $role"
-    run_sql -c "$stmt" >/dev/null
+    echo "  [plan] $role ($access): $(apply_one "$role" "$access")"
   fi
+  applied=$((applied + 1))
 done < <(python3 -c '
 import sys, json
-for role, access in json.load(sys.stdin).items():
-    print("%s\t%s" % (role, access))
+for e in json.load(sys.stdin):
+    print("%s\t%s" % (e["role"], e["access"]))
 ' <<<"$GRANTS_JSON")
 
 if (( DRY_RUN )); then
-  log "Dry run — no changes applied."
+  log "Dry run — ${applied} identity grant(s) would be applied in one transaction; no changes made."
 else
-  log "Done — applied ${COUNT} grant(s)."
+  # ON_ERROR_STOP=1 + BEGIN/COMMIT: any error aborts the transaction and psql
+  # exits non-zero, so `set -e` skips the success message below.
+  run_sql -f - <<<"BEGIN;
+${SQL}COMMIT;"
+  log "Done — applied grants for ${applied} identit$( ((applied == 1)) && echo y || echo ies) in one transaction."
 fi

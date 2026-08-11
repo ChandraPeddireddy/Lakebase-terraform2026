@@ -51,12 +51,17 @@ command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
 command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
 : "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
 
-# Auth resolution (same policy as deploy.sh): force PAT auth only when a PAT is
-# present, otherwise leave DATABRICKS_CONFIG_PROFILE-based OAuth (U2M/M2M SP)
-# resolution intact. Wiping the profile unconditionally would break OAuth flows.
+# Auth resolution (same policy as deploy.sh) — precedence: PAT > OAuth M2M >
+# config profile. Clear a lingering DATABRICKS_CONFIG_PROFILE when an explicit
+# credential is set, so the credential (not a stale cached profile) is
+# authoritative; the CLI otherwise lets the profile shadow env-var creds. With
+# no explicit credential, profile-based resolution is left intact.
 if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
   export DATABRICKS_CONFIG_PROFILE=""
   export DATABRICKS_AUTH_TYPE="pat"
+elif [[ -n "${DATABRICKS_CLIENT_ID:-}" && -n "${DATABRICKS_CLIENT_SECRET:-}" ]]; then
+  export DATABRICKS_CONFIG_PROFILE=""
+  export DATABRICKS_AUTH_TYPE="oauth-m2m"
 fi
 
 # --- Resolve connection (same approach as deploy.sh) -------------------------

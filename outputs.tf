@@ -54,14 +54,21 @@ output "secret_key" {
 
 # Identity-linked roles created by Terraform (layer 1). sql/grant_access.sh reads
 # this to apply the app_ro/app_rw GROUP grants (layer 2) that confer table access.
-# Emits one entry per role: the Postgres role name + desired access level.
+# Emits a LIST of {role, access}:
+#   - A list (not a map) tolerates two slugs pointing at the same principal; a
+#     map keyed by principal would fail plan with "duplicate object key". Applying
+#     a grant to the same role twice is idempotent, so duplicates are harmless.
+#   - `role` is read from the resource's actual spec.postgres_role, not re-derived
+#     from the var, so the GRANT always targets the role Terraform really created
+#     (the coupling is explicit and can't silently drift).
+# Iterating the resource map (not var.db_identity_roles) also keeps this valid
+# when create_dev_branch = false collapses the roles to an empty set.
 output "db_identity_grants" {
-  description = "Map of provisioned postgres_role -> access level (read|readwrite|none) for sql/grant_access.sh to enforce group membership."
-  # Iterate the resource map (not var.db_identity_roles) so this stays correct
-  # when create_dev_branch = false collapses the roles to an empty set — indexing
-  # the var into a non-existent resource instance would error at plan time.
-  value = {
-    for k, r in databricks_postgres_role.identity :
-    var.db_identity_roles[k].principal => coalesce(var.db_identity_roles[k].access, "read")
-  }
+  description = "List of {role, access} (access = read|readwrite|none) for sql/grant_access.sh to enforce group membership on each provisioned Postgres role."
+  value = [
+    for k, r in databricks_postgres_role.identity : {
+      role   = r.spec.postgres_role
+      access = coalesce(var.db_identity_roles[k].access, "read")
+    }
+  ]
 }

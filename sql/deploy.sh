@@ -44,17 +44,21 @@ command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
 command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
 : "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
 
-# Auth resolution:
-#   - If a PAT is present (DATABRICKS_TOKEN), force the CLI onto env-var/PAT auth
-#     so it doesn't fall back to a stale OAuth cache (the classic "OAuth is not
-#     configured for this host" failure). This clears any config profile so the
-#     token, not a cached profile, is authoritative.
-#   - Otherwise, leave the CLI's normal resolution intact so OAuth U2M/M2M via
-#     DATABRICKS_CONFIG_PROFILE (e.g. a workspace profile or service principal)
-#     works. Wiping the profile unconditionally would break those flows.
+# Auth resolution — precedence: PAT > OAuth M2M (client id/secret) > config profile.
+# When an EXPLICIT credential is present in the environment, clear any lingering
+# DATABRICKS_CONFIG_PROFILE so the credential — not a stale cached profile — is
+# authoritative. The CLI otherwise gives DATABRICKS_CONFIG_PROFILE precedence
+# over env-var creds, which silently shadows the SP (auth resolves via the
+# profile and ignores CLIENT_ID/SECRET), and can fail with
+# "invalid_grant: Refresh token is invalid" on a stale profile token.
+# With no explicit credential, profile-based resolution is left intact so a
+# workspace profile (DATABRICKS_CONFIG_PROFILE only) still works.
 if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
   export DATABRICKS_CONFIG_PROFILE=""
   export DATABRICKS_AUTH_TYPE="pat"
+elif [[ -n "${DATABRICKS_CLIENT_ID:-}" && -n "${DATABRICKS_CLIENT_SECRET:-}" ]]; then
+  export DATABRICKS_CONFIG_PROFILE=""
+  export DATABRICKS_AUTH_TYPE="oauth-m2m"
 fi
 
 # --- Resolve connection details from Terraform -------------------------------
