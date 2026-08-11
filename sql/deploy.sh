@@ -44,10 +44,18 @@ command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
 command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
 : "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
 
-# Force the CLI onto env-var/PAT auth so it doesn't fall back to a stale OAuth
-# cache (the classic "OAuth is not configured for this host" failure).
-export DATABRICKS_CONFIG_PROFILE=""
-[[ -n "${DATABRICKS_TOKEN:-}" ]] && export DATABRICKS_AUTH_TYPE="pat"
+# Auth resolution:
+#   - If a PAT is present (DATABRICKS_TOKEN), force the CLI onto env-var/PAT auth
+#     so it doesn't fall back to a stale OAuth cache (the classic "OAuth is not
+#     configured for this host" failure). This clears any config profile so the
+#     token, not a cached profile, is authoritative.
+#   - Otherwise, leave the CLI's normal resolution intact so OAuth U2M/M2M via
+#     DATABRICKS_CONFIG_PROFILE (e.g. a workspace profile or service principal)
+#     works. Wiping the profile unconditionally would break those flows.
+if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
+  export DATABRICKS_CONFIG_PROFILE=""
+  export DATABRICKS_AUTH_TYPE="pat"
+fi
 
 # --- Resolve connection details from Terraform -------------------------------
 log "Reading endpoint from terraform output ($TF_DIR)"

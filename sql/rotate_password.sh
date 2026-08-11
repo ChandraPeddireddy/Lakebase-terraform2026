@@ -51,8 +51,13 @@ command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
 command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
 : "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
 
-export DATABRICKS_CONFIG_PROFILE=""
-[[ -n "${DATABRICKS_TOKEN:-}" ]] && export DATABRICKS_AUTH_TYPE="pat"
+# Auth resolution (same policy as deploy.sh): force PAT auth only when a PAT is
+# present, otherwise leave DATABRICKS_CONFIG_PROFILE-based OAuth (U2M/M2M SP)
+# resolution intact. Wiping the profile unconditionally would break OAuth flows.
+if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
+  export DATABRICKS_CONFIG_PROFILE=""
+  export DATABRICKS_AUTH_TYPE="pat"
+fi
 
 # --- Resolve connection (same approach as deploy.sh) -------------------------
 ENDPOINT_NAME="$(terraform -chdir="$TF_DIR" output -raw dev_endpoint_name 2>/dev/null || true)"
