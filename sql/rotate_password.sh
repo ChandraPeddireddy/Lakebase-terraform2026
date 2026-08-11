@@ -93,9 +93,21 @@ log "Password updated."
 if [[ -n "$SECRET_SCOPE" || -n "$SECRET_KEY" ]]; then
   [[ -n "$SECRET_SCOPE" && -n "$SECRET_KEY" ]] \
     || { err "--secret-scope and --secret-key must be given together"; exit 2; }
-  databricks secrets list-scopes 2>/dev/null | grep -qw "$SECRET_SCOPE" \
-    || { log "Creating secret scope '$SECRET_SCOPE'"; databricks secrets create-scope "$SECRET_SCOPE"; }
-  printf '%s' "$NEW_PW" | databricks secrets put-secret "$SECRET_SCOPE" "$SECRET_KEY" --string-value "$(cat)"
+  # Check existence via command substitution (not a pipe to grep -q, which trips
+  # `set -o pipefail` with SIGPIPE when grep exits early). Create only if absent.
+  scopes="$(databricks secrets list-scopes -o json 2>/dev/null || true)"
+  if ! grep -q "\"name\": *\"${SECRET_SCOPE}\"" <<<"$scopes"; then
+    log "Creating secret scope '$SECRET_SCOPE'"
+    databricks secrets create-scope "$SECRET_SCOPE"
+  fi
+  # Pass the value via a locked-down temp JSON file (--json @file) so it never
+  # appears on the command line / in `ps`. Cleaned up on exit.
+  req="$(mktemp)"; chmod 600 "$req"
+  trap 'rm -f "$req"' EXIT
+  python3 -c 'import json,sys;json.dump({"scope":sys.argv[1],"key":sys.argv[2],"string_value":sys.argv[3]},open(sys.argv[4],"w"))' \
+    "$SECRET_SCOPE" "$SECRET_KEY" "$NEW_PW" "$req"
+  databricks secrets put-secret --json "@$req" >/dev/null
+  rm -f "$req"; trap - EXIT
   log "Stored in secret ${SECRET_SCOPE}/${SECRET_KEY}"
 fi
 

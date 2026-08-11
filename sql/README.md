@@ -94,7 +94,9 @@ source ../env.sh
 # Generate a strong password and set it (not printed, not stored):
 ./rotate_password.sh --role app_service
 
-# Generate + store in a Databricks secret scope (recommended):
+# Generate + store in a Databricks secret scope (recommended).
+# The scope itself is created by Terraform (see ../secrets.tf); this writes the
+# value into it at runtime so the password never lands in Terraform state:
 ./rotate_password.sh --role app_service --secret-scope lakebase --secret-key app_service_pw
 
 # Generate + print once (capture it yourself):

@@ -28,3 +28,18 @@ dev_branch_id        = "dev"
 dev_branch_no_expiry = true
 dev_endpoint_id      = "primary"
 dev_endpoint_type    = "ENDPOINT_TYPE_READ_WRITE"  # or ENDPOINT_TYPE_READ_ONLY
+
+# --- Secret scope (for role passwords) --------------------------------------
+create_secret_scope     = true
+secret_scope_name       = "lakebase"
+secret_key              = "app_service_pw"
+secret_reader_principal = ""            # e.g. "me@example.com" or an SP app id; empty = no READ ACL
+
+# Terraform manages only the scope + ACLs. Write the password value at runtime:
+#   cd sql && ./rotate_password.sh --role app_service \
+#       --secret-scope lakebase --secret-key app_service_pw
+#
+# Opt-in only (dev/CI): manage the value in Terraform too. This stores the
+# plaintext password in Terraform STATE — avoid for real environments.
+# manage_secret_value = false
+# secret_value        = ""              # pass via TF_VAR_secret_value, never commit

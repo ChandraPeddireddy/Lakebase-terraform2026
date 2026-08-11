@@ -86,3 +86,50 @@ variable "dev_endpoint_type" {
     error_message = "dev_endpoint_type must be ENDPOINT_TYPE_READ_WRITE or ENDPOINT_TYPE_READ_ONLY."
   }
 }
+
+# --- Secret scope (for role passwords) --------------------------------------
+variable "create_secret_scope" {
+  description = "Whether to create a Databricks secret scope for Lakebase role passwords."
+  type        = bool
+  default     = true
+}
+
+variable "secret_scope_name" {
+  description = "Name of the Databricks secret scope that holds Lakebase role passwords."
+  type        = string
+  default     = "lakebase"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]{1,128}$", var.secret_scope_name))
+    error_message = "secret_scope_name must be 1-128 chars: letters, digits, underscore, dash, or dot."
+  }
+}
+
+variable "secret_key" {
+  description = "Key within the scope under which the role password is stored."
+  type        = string
+  default     = "app_service_pw"
+}
+
+variable "secret_reader_principal" {
+  description = "Optional principal (user email, group name, or SP application id) to grant READ on the scope. Empty = no ACL created (creator keeps MANAGE)."
+  type        = string
+  default     = ""
+}
+
+# The password value is normally written at runtime by sql/rotate_password.sh so
+# it never lands in Terraform state. The two variables below let you opt into
+# managing it declaratively instead — at the cost of storing the plaintext in
+# state. Only do this for throwaway dev/CI.
+variable "manage_secret_value" {
+  description = "If true, Terraform manages the password value in the scope (plaintext ends up in state). Prefer rotate_password.sh; leave false for real environments."
+  type        = bool
+  default     = false
+}
+
+variable "secret_value" {
+  description = "Password value, used only when manage_secret_value = true. Pass via TF_VAR_secret_value, never commit it."
+  type        = string
+  default     = ""
+  sensitive   = true
+}

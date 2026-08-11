@@ -40,3 +40,14 @@ output "dev_endpoint_types" {
 output "branch_names" {
   value = [for b in data.databricks_postgres_branches.all.branches : b.name]
 }
+
+# Secret scope for role passwords (null when create_secret_scope = false)
+output "secret_scope_name" {
+  description = "Databricks secret scope holding Lakebase role passwords."
+  value       = one(databricks_secret_scope.lakebase[*].name)
+}
+
+output "secret_key" {
+  description = "Key within the scope where the role password is stored. Populate it with sql/rotate_password.sh --secret-scope <scope> --secret-key <key>."
+  value       = var.create_secret_scope ? var.secret_key : null
+}

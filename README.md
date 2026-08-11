@@ -102,6 +102,11 @@ original quickstart. Override them in `terraform.tfvars` — see
 | `create_dev_branch` | `true` | Set `false` to manage the project only |
 | `dev_branch_id` | `dev` | Development branch id |
 | `dev_endpoint_type` | `ENDPOINT_TYPE_READ_WRITE` | or `…READ_ONLY` |
+| `create_secret_scope` | `true` | Create a Databricks secret scope for role passwords |
+| `secret_scope_name` | `lakebase` | Name of that secret scope |
+| `secret_key` | `app_service_pw` | Key where the role password is stored |
+| `secret_reader_principal` | `""` | Optional principal granted `READ` on the scope |
+| `manage_secret_value` | `false` | Opt-in: manage the password value in TF (plaintext in **state**) |
 
 Inputs are validated (e.g. `pg_version` must be 14–17, `project_id` must be a
 valid slug), so bad values fail at `plan` instead of at the API.
@@ -116,6 +121,27 @@ Order of operations: **Project → Branch → Endpoint**
   implicit `primary` endpoint. Skipped entirely when `create_dev_branch = false`.
 - `databricks_postgres_endpoint.dev_primary` — adopts the dev branch's implicit
   `primary` endpoint via `replace_existing = true`.
+- `databricks_secret_scope.lakebase` (+ optional `databricks_secret_acl`) — a
+  secret scope to hold Lakebase role passwords. Skipped when
+  `create_secret_scope = false`.
+
+### Secret management
+
+Terraform manages only the secret **scope** and its **ACLs** — infrastructure
+with no secret material, safe to keep in state. The password **value** is written
+at runtime by [`sql/rotate_password.sh`](sql/README.md) so plaintext never lands
+in Terraform state:
+
+```bash
+terraform apply                       # creates the scope
+cd sql && ./rotate_password.sh --role app_service \
+    --secret-scope "$(terraform -chdir=.. output -raw secret_scope_name)" \
+    --secret-key   "$(terraform -chdir=.. output -raw secret_key)"
+```
+
+For a fully-declarative (dev/CI-only) alternative, set `manage_secret_value =
+true` and pass `secret_value` via `TF_VAR_secret_value` — but note the plaintext
+is then stored in Terraform state. Prefer the script for anything real.
 
 ## Files
 
@@ -124,7 +150,8 @@ Order of operations: **Project → Branch → Endpoint**
 | `versions.tf` | Provider + version constraints, env-var auth |
 | `variables.tf` | Input variables + validation (all tunables) |
 | `main.tf` | Project, branch, endpoint, and data sources |
-| `outputs.tf` | Output values (steps 3–7) |
+| `secrets.tf` | Secret scope + ACLs for role passwords |
+| `outputs.tf` | Output values (steps 3–7, secret scope) |
 | `terraform.tfvars.example` | Config template (copy to `terraform.tfvars`) |
 | `env.sh.example` | Auth env vars template (copy to `env.sh`) |
 | `sql/` | Versioned SQL migrations + runner (schema/tables/data) — see [`sql/README.md`](sql/README.md) |
