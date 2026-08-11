@@ -31,6 +31,8 @@ sql/
 │   └── 005_create_login_user.sql   # app_service login role (no password)
 ├── deploy.sh                       # the migration runner
 ├── rotate_password.sh              # admin: set/rotate a role's password
+├── grant_access.sh                 # apply app_ro/app_rw grants to identity roles
+├── common.sh                       # shared auth + connection helpers (sourced)
 └── README.md
 ```
 

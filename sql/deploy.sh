@@ -24,8 +24,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MIGRATIONS_DIR="$SCRIPT_DIR/migrations"
-TF_DIR="${TF_DIR:-$(dirname "$SCRIPT_DIR")}"
-PG_DATABASE="${PG_DATABASE:-databricks_postgres}"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
 
 MODE="apply"
 case "${1:-}" in
@@ -35,58 +35,10 @@ case "${1:-}" in
   *) echo "Unknown argument: $1" >&2; exit 2 ;;
 esac
 
-log()  { printf '\033[0;36m==>\033[0m %s\n' "$*"; }
-err()  { printf '\033[0;31mError:\033[0m %s\n' "$*" >&2; }
-
-# --- Preflight ---------------------------------------------------------------
-command -v psql >/dev/null      || { err "psql not found (brew install libpq)"; exit 1; }
-command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
-command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
-: "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
-
-# Auth resolution — precedence: PAT > OAuth M2M (client id/secret) > config profile.
-# When an EXPLICIT credential is present in the environment, clear any lingering
-# DATABRICKS_CONFIG_PROFILE so the credential — not a stale cached profile — is
-# authoritative. The CLI otherwise gives DATABRICKS_CONFIG_PROFILE precedence
-# over env-var creds, which silently shadows the SP (auth resolves via the
-# profile and ignores CLIENT_ID/SECRET), and can fail with
-# "invalid_grant: Refresh token is invalid" on a stale profile token.
-# With no explicit credential, profile-based resolution is left intact so a
-# workspace profile (DATABRICKS_CONFIG_PROFILE only) still works.
-if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
-  export DATABRICKS_CONFIG_PROFILE=""
-  export DATABRICKS_AUTH_TYPE="pat"
-elif [[ -n "${DATABRICKS_CLIENT_ID:-}" && -n "${DATABRICKS_CLIENT_SECRET:-}" ]]; then
-  export DATABRICKS_CONFIG_PROFILE=""
-  export DATABRICKS_AUTH_TYPE="oauth-m2m"
-fi
-
-# --- Resolve connection details from Terraform -------------------------------
-log "Reading endpoint from terraform output ($TF_DIR)"
-ENDPOINT_NAME="$(terraform -chdir="$TF_DIR" output -raw dev_endpoint_name 2>/dev/null || true)"
-[[ -n "$ENDPOINT_NAME" && "$ENDPOINT_NAME" != "null" ]] \
-  || { err "no dev_endpoint_name output — run 'terraform apply' first"; exit 1; }
-
-# Use the typed `databricks postgres` subcommands rather than the raw
-# `databricks api .../postgres/...` passthrough: the passthrough resolves auth
-# differently and can latch onto a stale cached U2M token (failing with
-# "invalid_grant: Refresh token is invalid") even when OAuth M2M env creds are
-# set. The typed commands resolve auth correctly and track the Beta API.
-PG_HOST="$(databricks postgres get-endpoint "${ENDPOINT_NAME}" -o json \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
-PG_USER="$(databricks current-user me \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
-
-log "Minting short-lived Postgres credential"
-PGPASSWORD="$(databricks postgres generate-database-credential "${ENDPOINT_NAME}" -o json \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
-export PGPASSWORD PGSSLMODE="require"
-
+# --- Preflight, auth, and connection (see common.sh) -------------------------
+preflight_and_auth
+resolve_connection
 log "Target: ${PG_USER}@${PG_HOST}/${PG_DATABASE}"
-
-# psql wrapper: fail on the first SQL error, quiet, no pager.
-run_sql() { psql -h "$PG_HOST" -p 5432 -U "$PG_USER" -d "$PG_DATABASE" \
-              -v ON_ERROR_STOP=1 -qAt "$@"; }
 
 # --- Bootstrap the migrations ledger -----------------------------------------
 run_sql -c "

@@ -27,8 +27,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TF_DIR="${TF_DIR:-$(dirname "$SCRIPT_DIR")}"
-PG_DATABASE="${PG_DATABASE:-databricks_postgres}"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
 
 ROLE="" SHOW=0 PW_STDIN=0 SECRET_SCOPE="" SECRET_KEY=""
 while [[ $# -gt 0 ]]; do
@@ -42,42 +42,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-log() { printf '\033[0;36m==>\033[0m %s\n' "$*"; }
-err() { printf '\033[0;31mError:\033[0m %s\n' "$*" >&2; }
-
 [[ -n "$ROLE" ]] || { err "--role is required"; exit 2; }
-command -v psql >/dev/null      || { err "psql not found (brew install libpq)"; exit 1; }
-command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
-command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
-: "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
 
-# Auth resolution (same policy as deploy.sh) — precedence: PAT > OAuth M2M >
-# config profile. Clear a lingering DATABRICKS_CONFIG_PROFILE when an explicit
-# credential is set, so the credential (not a stale cached profile) is
-# authoritative; the CLI otherwise lets the profile shadow env-var creds. With
-# no explicit credential, profile-based resolution is left intact.
-if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
-  export DATABRICKS_CONFIG_PROFILE=""
-  export DATABRICKS_AUTH_TYPE="pat"
-elif [[ -n "${DATABRICKS_CLIENT_ID:-}" && -n "${DATABRICKS_CLIENT_SECRET:-}" ]]; then
-  export DATABRICKS_CONFIG_PROFILE=""
-  export DATABRICKS_AUTH_TYPE="oauth-m2m"
-fi
-
-# --- Resolve connection (same approach as deploy.sh) -------------------------
-ENDPOINT_NAME="$(terraform -chdir="$TF_DIR" output -raw dev_endpoint_name 2>/dev/null || true)"
-[[ -n "$ENDPOINT_NAME" && "$ENDPOINT_NAME" != "null" ]] \
-  || { err "no dev_endpoint_name output — run 'terraform apply' first"; exit 1; }
-
-# Typed `databricks postgres` subcommands, not the raw `api` passthrough — see
-# the equivalent note in deploy.sh (avoids stale-U2M-token auth failures).
-PG_HOST="$(databricks postgres get-endpoint "${ENDPOINT_NAME}" -o json \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
-PG_USER="$(databricks current-user me \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
-PGPASSWORD="$(databricks postgres generate-database-credential "${ENDPOINT_NAME}" -o json \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
-export PGPASSWORD PGSSLMODE="require"
+# --- Preflight, auth, and connection (see common.sh) -------------------------
+preflight_and_auth
+resolve_connection
 
 # --- Obtain the new password -------------------------------------------------
 if [[ "$PW_STDIN" -eq 1 ]]; then

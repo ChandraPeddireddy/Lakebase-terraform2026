@@ -26,8 +26,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TF_DIR="${TF_DIR:-$(dirname "$SCRIPT_DIR")}"
-PG_DATABASE="${PG_DATABASE:-databricks_postgres}"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
 
 DRY_RUN=0
 case "${1:-}" in
@@ -36,38 +36,9 @@ case "${1:-}" in
   *) echo "Unknown argument: $1" >&2; exit 2 ;;
 esac
 
-log() { printf '\033[0;36m==>\033[0m %s\n' "$*"; }
-err() { printf '\033[0;31mError:\033[0m %s\n' "$*" >&2; }
-
-command -v psql >/dev/null      || { err "psql not found (brew install libpq)"; exit 1; }
-command -v terraform >/dev/null || { err "terraform not found"; exit 1; }
-command -v databricks >/dev/null|| { err "databricks CLI not found"; exit 1; }
-: "${DATABRICKS_HOST:?set DATABRICKS_HOST (source ../env.sh)}"
-
-# Auth resolution (same policy as deploy.sh) — precedence: PAT > OAuth M2M >
-# config profile. Clear a lingering DATABRICKS_CONFIG_PROFILE when an explicit
-# credential is set so it can't shadow the env-var creds; leave profile-based
-# resolution intact when no explicit credential is present.
-if [[ -n "${DATABRICKS_TOKEN:-}" ]]; then
-  export DATABRICKS_CONFIG_PROFILE=""
-  export DATABRICKS_AUTH_TYPE="pat"
-elif [[ -n "${DATABRICKS_CLIENT_ID:-}" && -n "${DATABRICKS_CLIENT_SECRET:-}" ]]; then
-  export DATABRICKS_CONFIG_PROFILE=""
-  export DATABRICKS_AUTH_TYPE="oauth-m2m"
-fi
-
-# --- Resolve connection (typed commands, same as deploy.sh) ------------------
-ENDPOINT_NAME="$(terraform -chdir="$TF_DIR" output -raw dev_endpoint_name 2>/dev/null || true)"
-[[ -n "$ENDPOINT_NAME" && "$ENDPOINT_NAME" != "null" ]] \
-  || { err "no dev_endpoint_name output — run 'terraform apply' first"; exit 1; }
-
-PG_HOST="$(databricks postgres get-endpoint "${ENDPOINT_NAME}" -o json \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
-PG_USER="$(databricks current-user me \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
-PGPASSWORD="$(databricks postgres generate-database-credential "${ENDPOINT_NAME}" -o json \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
-export PGPASSWORD PGSSLMODE="require"
+# --- Preflight, auth, and connection (see common.sh) -------------------------
+preflight_and_auth
+resolve_connection
 
 # --- Read the grant plan from terraform output -------------------------------
 # db_identity_grants is a JSON list of {role, access} (see ../outputs.tf).
@@ -76,9 +47,6 @@ COUNT="$(python3 -c 'import sys,json;print(len(json.load(sys.stdin)))' <<<"$GRAN
 (( COUNT )) || { log "No identity grants in terraform output — nothing to do."; exit 0; }
 
 log "Target: ${PG_USER}@${PG_HOST}/${PG_DATABASE}  (${COUNT} identity grant(s))"
-
-run_sql() { psql -h "$PG_HOST" -p 5432 -U "$PG_USER" -d "$PG_DATABASE" \
-              -v ON_ERROR_STOP=1 -qAt "$@"; }
 
 # Build the GRANT/REVOKE statements. Role names come from a trusted source
 # (terraform output of our own tfvars) and are quoted as identifiers.
