@@ -1,0 +1,146 @@
+# Deployment steps — Lakebase Terraform (v3) test runbook
+
+Step-by-step commands to deploy and verify the `terraform-v3-oauth-secrets`
+branch from a clean slate. Run from a terminal, in order. Every phase is
+idempotent and safe to re-run.
+
+Assumes: `env.sh` holds the automation SP's OAuth M2M creds
+(`DATABRICKS_HOST` + `DATABRICKS_CLIENT_ID` + `DATABRICKS_CLIENT_SECRET`),
+`terraform.tfvars` is configured, terraform + databricks CLI + libpq installed.
+
+---
+
+## Phase 0 — Setup (once per shell)
+
+```bash
+cd /tmp/Lakebase-terraform2026
+
+# Auth: load automation SP M2M creds; ensure no profile/PAT shadows them
+source env.sh
+unset DATABRICKS_CONFIG_PROFILE DATABRICKS_TOKEN
+
+# Put psql on PATH (libpq is keg-only on macOS/Homebrew)
+export PATH="/opt/homebrew/opt/libpq/bin:$PATH"
+
+# Sanity checks
+git rev-parse --abbrev-ref HEAD                            # -> terraform-v3-oauth-secrets
+git log --oneline -1                                       # -> 4adc3e5 ...
+databricks auth describe | grep -i "Authenticated with"    # -> oauth-m2m
+```
+
+---
+
+## Phase 1 — Clean-room Terraform init
+
+```bash
+# Wipe local terraform artifacts for a true fresh deploy
+rm -rf .terraform .terraform.lock.hcl terraform.tfstate terraform.tfstate.backup tfplan
+
+terraform init       # downloads provider, writes lock file
+terraform validate   # -> Success! The configuration is valid.
+```
+
+---
+
+## Phase 2 — Plan & apply infra
+
+```bash
+terraform plan -out=tfplan
+# EXPECT: Plan: 7 to add, 0 to change, 0 to destroy
+#   project, dev branch, endpoint, secret scope, secret ACL, 2 identity roles
+#   verify: enable_pg_native_login = true, purge_on_delete = false
+
+terraform apply tfplan
+# EXPECT: Apply complete! Resources: 7 added
+```
+
+---
+
+## Phase 3 — SQL layers (schema -> password -> grants)
+
+```bash
+cd sql
+
+# 3a. Migrations
+./deploy.sh --dry-run      # EXPECT: 5 pending
+./deploy.sh                # EXPECT: Done — applied 5 migration(s)
+
+# 3b. Set app_service password + store in secret scope
+./rotate_password.sh --role app_service --secret-scope lakebase --secret-key app_service_pw
+# EXPECT: Password updated. / Stored in secret lakebase/app_service_pw
+
+# 3c. Identity grants (app SP -> app_rw, you -> app_ro)
+./grant_access.sh --dry-run    # preview the transaction
+./grant_access.sh              # EXPECT: Done — applied grants for 2 identities in one transaction
+```
+
+---
+
+## Phase 4 — Verify as the automation SP (owner)
+
+```bash
+# still in sql/ — resolve connection for ad-hoc psql
+ENDPOINT_NAME="projects/lakebase-demo-dev/branches/dev/endpoints/primary"
+PG_HOST="$(databricks postgres get-endpoint "$ENDPOINT_NAME" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
+PG_USER="$(databricks current-user me | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
+export PGPASSWORD="$(databricks postgres generate-database-credential "$ENDPOINT_NAME" -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
+export PGSSLMODE=require
+
+psql -h "$PG_HOST" -p 5432 -U "$PG_USER" -d databricks_postgres -c "\dt app.*"
+psql -h "$PG_HOST" -p 5432 -U "$PG_USER" -d databricks_postgres -c "SELECT count(*) FROM app.customers;"   # -> 3
+```
+
+---
+
+## Phase 5 — Verify as YOU (the real SQL-Editor test)
+
+```bash
+# Connect using YOUR identity via the lakebase-sandbox profile (NOT the SP)
+EP="projects/lakebase-demo-dev/branches/dev/endpoints/primary"
+YOUR_HOST="$(databricks postgres get-endpoint "$EP" --profile lakebase-sandbox -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"]["hosts"]["host"])')"
+YOU="$(databricks current-user me --profile lakebase-sandbox -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["userName"])')"
+export PGPASSWORD="$(databricks postgres generate-database-credential "$EP" --profile lakebase-sandbox -o json | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')"
+export PGSSLMODE=require
+
+# Read should work:
+psql -h "$YOUR_HOST" -p 5432 -U "$YOU" -d databricks_postgres -c "SELECT count(*) FROM app.customers;"   # -> 3
+# Write should be DENIED (you are read-only):
+psql -h "$YOUR_HOST" -p 5432 -U "$YOU" -d databricks_postgres -c "INSERT INTO app.customers(email,full_name) VALUES('x@x.com','x');"   # -> permission denied
+```
+
+Then open the **SQL Editor** in the workspace UI, point it at the **dev** branch
+endpoint, and confirm you can browse `app.customers` / `app.orders`.
+
+---
+
+## Teardown (when done)
+
+```bash
+cd /tmp/Lakebase-terraform2026
+
+# To free the project slug IMMEDIATELY (so you can redeploy the same project_id):
+#   1. set purge_on_delete = true in terraform.tfvars
+#   2. terraform apply -auto-approve      # records purge intent
+#   3. terraform destroy -auto-approve    # hard-deletes, frees slug now
+# Then set purge_on_delete back to false.
+#
+# Default (purge_on_delete = false): terraform destroy soft-deletes with a 7-day
+# retention window; the slug stays reserved until it expires.
+```
+
+---
+
+## Notes / troubleshooting
+
+- **`psql: command not found`** — re-run `export PATH="/opt/homebrew/opt/libpq/bin:$PATH"`
+  (does not persist across new terminal tabs).
+- **Auth resolves to the wrong identity** — ensure `DATABRICKS_CONFIG_PROFILE`
+  and `DATABRICKS_TOKEN` are unset when using M2M env creds (Phase 0). The scripts
+  clear the profile automatically when M2M/PAT creds are present, but a clean env
+  is unambiguous.
+- **"no dev_endpoint_name output"** — run `terraform apply` first (Phase 2).
+- **"project slug already exists"** on apply — a prior soft-deleted project holds
+  the slug; purge it (see Teardown) or pick a new `project_id`.
+- **Endpoint host changes** on every project recreate — always resolve it from
+  `databricks postgres get-endpoint`, never hardcode.
+```
