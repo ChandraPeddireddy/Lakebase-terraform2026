@@ -209,7 +209,7 @@ cd sql
 ## Teardown (when done)
 
 ```bash
-cd /tmp/Lakebase-terraform2026
+cd <your-repo-clone>
 
 # To free the project slug IMMEDIATELY (so you can redeploy the same project_id):
 #   1. set purge_on_delete = true in terraform.tfvars
@@ -236,4 +236,3 @@ cd /tmp/Lakebase-terraform2026
   the slug; purge it (see Teardown) or pick a new `project_id`.
 - **Endpoint host changes** on every project recreate — always resolve it from
   `databricks postgres get-endpoint`, never hardcode.
-```
