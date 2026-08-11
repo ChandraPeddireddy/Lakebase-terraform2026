@@ -131,6 +131,15 @@ variable "db_identity_roles" {
     ])
     error_message = "access must be one of: read, readwrite, none."
   }
+
+  # Identity roles are created on the dev branch (roles.tf for_each is gated on
+  # create_dev_branch). Populating this map while create_dev_branch = false would
+  # silently create zero roles — fail loudly at plan time instead so the toggle
+  # conflict is obvious rather than surfacing later as "permission denied".
+  validation {
+    condition     = var.create_dev_branch || length(var.db_identity_roles) == 0
+    error_message = "db_identity_roles requires create_dev_branch = true (roles are provisioned on the dev branch). Set create_dev_branch = true or clear db_identity_roles."
+  }
 }
 
 # --- Secret scope (for role passwords) --------------------------------------

@@ -50,11 +50,17 @@ log "Target: ${PG_USER}@${PG_HOST}/${PG_DATABASE}  (${COUNT} identity grant(s))"
 
 # Build the GRANT/REVOKE statements. Role names come from a trusted source
 # (terraform output of our own tfvars) and are quoted as identifiers.
+# Each access level sets the COMPLETE desired membership (grant what's wanted,
+# revoke what isn't) so the DB state is fully declarative and independent of the
+# prior level — read<->readwrite<->none round-trips cleanly. readwrite revokes
+# the DIRECT app_ro membership and relies on app_rw's inherited app_ro (migration
+# 004 does GRANT app_ro TO app_rw), so read access is retained without a stale
+# direct grant that would misrepresent the access level to an audit.
 apply_one() {
   local role="$1" access="$2"
   case "$access" in
     read)      echo "GRANT app_ro TO \"$role\"; REVOKE app_rw FROM \"$role\";" ;;
-    readwrite) echo "GRANT app_rw TO \"$role\";" ;;   # app_rw already includes app_ro
+    readwrite) echo "GRANT app_rw TO \"$role\"; REVOKE app_ro FROM \"$role\";" ;;
     none)      echo "REVOKE app_ro FROM \"$role\"; REVOKE app_rw FROM \"$role\";" ;;
     *)         err "unknown access '$access' for role '$role'"; return 1 ;;
   esac
