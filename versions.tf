@@ -1,10 +1,15 @@
 terraform {
-  required_version = ">= 1.0"
+  # >= 1.9: variable validation blocks reference other variables (prod_max_cu
+  # checks prod_min_cu). The config also uses optional() object attributes (>= 1.3).
+  required_version = ">= 1.9.0"
 
   required_providers {
     databricks = {
-      source  = "databricks/databricks"
-      version = "~> 1.0"
+      source = "databricks/databricks"
+      # Pinned: postgres HA (`group` block) and postgres_catalog require a recent
+      # provider. 1.126.0 verified to expose both. (Phase 3 will add
+      # databricks_model_serving, also present from this version.)
+      version = ">= 1.126.0, < 2.0"
     }
   }
 }

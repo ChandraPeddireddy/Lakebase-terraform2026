@@ -29,6 +29,22 @@ dev_branch_no_expiry = true
 dev_endpoint_id      = "primary"
 dev_endpoint_type    = "ENDPOINT_TYPE_READ_WRITE"  # or ENDPOINT_TYPE_READ_ONLY
 
+# --- Phase 1: Production endpoint (HA + autoscaling) ------------------------
+# COST/RISK: enabling this ADOPTS the live production `primary` endpoint
+# (replace_existing) and forces always-on HA compute (scale-to-zero off = 24/7
+# billing). Left false so copying this file reproduces the quickstart; flip to
+# true only when you intend to activate Phase 1.
+enable_prod_endpoint             = false     # true = adopt & manage production `primary`
+prod_min_cu                      = 1         # 150K/day NBA: 1 CU floor is ample for indexed reads
+prod_max_cu                      = 4         # spread (max - min) must be <= 16
+prod_ha_secondaries              = 1         # 1-3; confirm group semantics on first plan
+prod_enable_readable_secondaries = true      # secondaries serve reads via -ro string
+
+# --- Phase 2: Unity Catalog registration ------------------------------------
+enable_uc_catalog            = false         # flip to true at Phase 2 kickoff
+uc_catalog_id                = "lakebase_nba"
+uc_catalog_postgres_database = "databricks_postgres"
+
 # --- Secret scope (for role passwords) --------------------------------------
 create_secret_scope     = true
 secret_scope_name       = "lakebase"

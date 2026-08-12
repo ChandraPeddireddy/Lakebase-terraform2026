@@ -87,6 +87,80 @@ variable "dev_endpoint_type" {
   }
 }
 
+# --- Phase 1: Production endpoint (HA + autoscaling) ------------------------
+# NOTE: defaults to false so `apply` with no tfvars still reproduces the
+# original quickstart (see file header). Set true (see terraform.tfvars.example)
+# to activate Phase 1 — this adopts the LIVE production endpoint with
+# replace_existing and forces always-on HA compute (24/7 billing).
+variable "enable_prod_endpoint" {
+  description = "Adopt and manage the production branch's primary endpoint (HA + autoscaling). Activates Phase 1."
+  type        = bool
+  default     = false
+}
+
+variable "prod_min_cu" {
+  description = "Autoscaling floor (CU) for the production endpoint. Size to cache the member working set in RAM."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.prod_min_cu >= 0.5 && var.prod_min_cu <= 32
+    error_message = "prod_min_cu must be between 0.5 and 32 (autoscaling range)."
+  }
+}
+
+variable "prod_max_cu" {
+  description = "Autoscaling ceiling (CU) for the production endpoint. max - min must be <= 16."
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.prod_max_cu >= var.prod_min_cu && var.prod_max_cu <= 32 && (var.prod_max_cu - var.prod_min_cu) <= 16
+    error_message = "prod_max_cu must be >= prod_min_cu, <= 32 (autoscaling ceiling), and the spread (max - min) must be <= 16 CU."
+  }
+}
+
+# Number of HA secondary computes. Per Databricks HA docs, spec.group.{min,max}
+# take the TOTAL compute count (1 primary + N secondaries), so main.tf sets them
+# to 1 + this value. With readable secondaries enabled, docs recommend >= 2 so
+# reads survive a failover (a single secondary's -ro traffic pauses until it is
+# replaced).
+variable "prod_ha_secondaries" {
+  description = "Number of HA secondary computes (1-3). Total instances = 1 primary + this. Use >= 2 for read availability across a failover."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.prod_ha_secondaries >= 1 && var.prod_ha_secondaries <= 3
+    error_message = "prod_ha_secondaries must be between 1 and 3."
+  }
+}
+
+variable "prod_enable_readable_secondaries" {
+  description = "If true, HA secondaries also serve reads via the -ro connection string (read offload)."
+  type        = bool
+  default     = true
+}
+
+# --- Phase 2: Unity Catalog registration ------------------------------------
+variable "enable_uc_catalog" {
+  description = "Register the Lakebase database as a UC catalog (prerequisite for synced tables). Enable at Phase 2."
+  type        = bool
+  default     = false
+}
+
+variable "uc_catalog_id" {
+  description = "Name of the Unity Catalog catalog to register for the Lakebase database."
+  type        = string
+  default     = "lakebase_nba"
+}
+
+variable "uc_catalog_postgres_database" {
+  description = "Postgres database name to expose via the UC catalog (default Lakebase DB)."
+  type        = string
+  default     = "databricks_postgres"
+}
+
 # --- Identity-linked Postgres roles -----------------------------------------
 # Provision a Postgres role per Databricks identity (user or service principal),
 # keyed by a stable role_id slug so add/remove doesn't reshuffle state

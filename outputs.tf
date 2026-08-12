@@ -41,6 +41,26 @@ output "branch_names" {
   value = [for b in data.databricks_postgres_branches.all.branches : b.name]
 }
 
+# Phase 1: production endpoint (HA + autoscaling)
+output "prod_endpoint_name" {
+  value = one(databricks_postgres_endpoint.prod_primary[*].name)
+}
+
+output "prod_endpoint_host" {
+  description = "Primary (read-write) connection host."
+  value       = try(one(databricks_postgres_endpoint.prod_primary[*].status.hosts.host), null)
+}
+
+output "prod_endpoint_read_only_host" {
+  description = "Read-only host routing to readable secondaries (populated when HA readable secondaries are enabled)."
+  value       = try(one(databricks_postgres_endpoint.prod_primary[*].status.hosts.read_only_host), null)
+}
+
+# Phase 2: registered UC catalog for the Lakebase database
+output "lakebase_uc_catalog_name" {
+  value = one(databricks_postgres_catalog.lakebase[*].name)
+}
+
 # Secret scope for role passwords (null when create_secret_scope = false)
 output "secret_scope_name" {
   description = "Databricks secret scope holding Lakebase role passwords."
